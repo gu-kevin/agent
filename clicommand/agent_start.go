@@ -15,6 +15,7 @@ import (
 	"github.com/buildkite/agent/experiments"
 	"github.com/buildkite/agent/logger"
 	"github.com/buildkite/agent/metrics"
+	"github.com/buildkite/agent/process"
 	"github.com/buildkite/shellwords"
 	"github.com/urfave/cli"
 )
@@ -81,6 +82,7 @@ type AgentStartConfig struct {
 	MetricsDatadogHost         string   `cli:"metrics-datadog-host"`
 	Spawn                      int      `cli:"spawn"`
 	LogFormat                  string   `cli:"log-format"`
+	CancelSignal               string   `cli:"cancel-signal"`
 
 	// Global flags
 	Debug       bool     `cli:"debug"`
@@ -179,7 +181,7 @@ var AgentStartCommand = cli.Command{
 		cli.IntFlag{
 			Name:   "cancel-grace-period",
 			Value:  10,
-			Usage:  "The number of seconds running processes are given to gracefully terminate before they are killed when a job is cancelled",
+			Usage:  "The number of seconds a canceled or timed out job is given to gracefully terminate and upload its artifacts",
 			EnvVar: "BUILDKITE_CANCEL_GRACE_PERIOD",
 		},
 		cli.StringFlag{
@@ -359,6 +361,12 @@ var AgentStartCommand = cli.Command{
 			Usage:  "Apply a conditional filter to plugins to restrict those this agent can use",
 			EnvVar: "BUILDKITE_PLUGIN_CONDITION",
 			Value:  "",
+    },
+    cli.StringFlag{
+			Name:   "cancel-signal",
+			Usage:  "The signal to use for cancellation",
+			EnvVar: "BUILDKITE_CANCEL_SIGNAL",
+			Value:  "SIGTERM",
 		},
 
 		// API Flags
@@ -598,6 +606,11 @@ var AgentStartCommand = cli.Command{
 			l.Info("Agents will disconnect after %d seconds of inactivity", agentConf.DisconnectAfterIdleTimeout)
 		}
 
+		cancelSig, err := process.ParseSignal(cfg.CancelSignal)
+		if err != nil {
+			l.Fatal("Failed to parse cancel-signal: %v", err)
+		}
+
 		// Create the API client
 		client := api.NewClient(l, loadAPIClientConfig(cfg, `Token`))
 
@@ -638,6 +651,7 @@ var AgentStartCommand = cli.Command{
 				agent.NewAgentWorker(
 					l.WithFields(logger.StringField(`agent`, ag.Name)), ag, mc, client, agent.AgentWorkerConfig{
 						AgentConfiguration: agentConf,
+						CancelSignal:       cancelSig,
 						Debug:              cfg.Debug,
 					}))
 		}
