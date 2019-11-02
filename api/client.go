@@ -18,8 +18,15 @@ import (
 	"strings"
 	"time"
 
+	"context"
+	"log"
+
 	"github.com/buildkite/agent/logger"
 	"github.com/google/go-querystring/query"
+
+	"github.com/gogo/protobuf/types"
+	"go.uber.org/yarpc"
+	"go.uber.org/yarpc/transport/grpc"
 )
 
 const (
@@ -145,28 +152,34 @@ func (c *Client) FromPing(resp *Ping) *Client {
 // specified, the value pointed to by body is JSON encoded and included as the
 // request body.
 func (c *Client) newRequest(method, urlStr string, body interface{}) (*http.Request, error) {
-	u := joinURLPath(c.conf.Endpoint, urlStr)
-
-	buf := new(bytes.Buffer)
-	if body != nil {
-		err := json.NewEncoder(buf).Encode(body)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	req, err := http.NewRequest(method, u, buf)
+	grpcTransport := grpc.NewTransport()
+	myserviceOutbound := grpcTransport.NewSingleOutbound("localhost:11000")
+	dispatcher := yarpc.NewDispatcher(yarpc.Config{
+		Name: "myclient",
+		Outbounds: yarpc.Outbounds{
+			"vip-internal-api": {Unary: myserviceOutbound},
+		},
+	})
+	err := dispatcher.Start()
 	if err != nil {
-		return nil, err
+		log.Fatal(err)
 	}
+	defer dispatcher.Stop()
+	client := NewGetBuildkiteAPIYARPCClient(dispatcher.ClientConfig("vip-internal-api"))
 
-	req.Header.Add("User-Agent", c.conf.UserAgent)
-
-	if body != nil {
-		req.Header.Add("Content-Type", "application/json")
+	ts := &types.Timestamp{Seconds: 0, Nanos: 0}
+	d := time.Now().Add(1 * time.Minute)
+	contextWithDeadline, cancel := context.WithDeadline(context.Background(), d)
+	defer cancel()
+	response, err := client.Ping(contextWithDeadline, &PingRequest{
+		Time: ts,
+	})
+	if err != nil {
+		log.Fatalf("Error when calling Ping: %s", err)
 	}
+	log.Printf("Response from server: %s", response.Response)
 
-	return req, nil
+	return nil, nil
 }
 
 // NewFormRequest creates an multi-part form request. A relative URL can be
